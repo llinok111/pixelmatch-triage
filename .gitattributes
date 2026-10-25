@@ -1,6 +1,18 @@
 # Set the default behavior, in case people don't have core.autocrlf set.
 * text=auto
 
+# these files are touched by this fork and must stay LF everywhere
+.gitattributes text eol=lf
+.gitignore text eol=lf
+NOTICE text eol=lf
+*.d.ts text eol=lf
+*.json text eol=lf
+
 # Declare files that will always have LF line endings on checkout, so that it matches the configured eslint rules.
 *.js text eol=lf
+*.mjs text eol=lf
 bin/pixelmatch text eol=lf
+bin/pixelmatch-triage.js text eol=lf
+
+# PNG fixtures are binary; never let git munge them
+*.png binary

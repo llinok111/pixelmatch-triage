@@ -18,6 +18,8 @@
  * @param {boolean} [options.checkerboard=true] Whether to blend semi-transparent pixels against a checkerboard pattern (true) or plain white (false) when comparing.
  * @param {number} [options.windowSize=Infinity] If finite, return the maximum number of diff pixels found in any N×N sliding window instead of the total diff count.
  * @param {Uint8Array | Uint8ClampedArray} [options.ignoreMask] One byte per pixel (width × height); pixels with a non-zero value are skipped from comparison.
+ * @param {Uint8Array} [options.detailMask] One byte per pixel (width × height) filled with the classification of that pixel: `0` equal, `1` differing, `2` anti-aliased and excluded, `3` excluded by `ignoreMask`. Optional; when omitted no classification work is done.
+ * @param {Float32Array} [options.detailDeltas] One number per pixel (width × height); differing pixels receive the full OKLab HyAB distance (roughly `0`–`1`, where `1` is black vs white), all others stay `0`. Optional and expensive; only computed for pixels that already differ.
  *
  * @return {number} The number of mismatched pixels (or the maximum per-window count if windowSize is finite).
  */
@@ -30,7 +32,7 @@ export default function pixelmatch(img1, img2, output, width, height, options = 
         checkerboard = true,
         windowSize = Infinity,
         includeAA, diffColorAlt, diffMask,
-        ignoreMask
+        ignoreMask, detailMask, detailDeltas
     } = options;
 
     if (!isPixelData(img1) || !isPixelData(img2) || (output && !isPixelData(output)) ||
@@ -47,6 +49,12 @@ export default function pixelmatch(img1, img2, output, width, height, options = 
     if (ignoreMask && ignoreMask.length !== len)
         throw new Error(`Ignore mask size does not match image width/height. Expecting ${len}. Got ${ignoreMask.length}`);
 
+    if (detailMask && (!ArrayBuffer.isView(detailMask) || detailMask.BYTES_PER_ELEMENT !== 1 || detailMask.length !== len))
+        throw new Error(`Detail mask must be a Uint8Array of ${len} entries.`);
+
+    if (detailDeltas && (!ArrayBuffer.isView(detailDeltas) || !(detailDeltas instanceof Float32Array) || detailDeltas.length !== len))
+        throw new Error(`Detail deltas must be a Float32Array of ${len} entries.`);
+
     // check if images are identical
     const a32 = new Uint32Array(img1.buffer, img1.byteOffset, len);
     const b32 = new Uint32Array(img2.buffer, img2.byteOffset, len);
@@ -60,6 +68,9 @@ export default function pixelmatch(img1, img2, output, width, height, options = 
         if (output && !diffMask) {
             for (let i = 0, pos = 0; i < len; i++, pos += 4) drawGrayPixel(output, pos, img1, alpha);
         }
+        // callers may hand in reused buffers, so reset the detail views we were given
+        if (detailMask) detailMask.fill(0);
+        if (detailDeltas) detailDeltas.fill(0);
         return 0;
     }
 
@@ -76,11 +87,17 @@ export default function pixelmatch(img1, img2, output, width, height, options = 
     // first/last row containing a counted diff, to bound the windowed post-pass
     let firstDiffY = -1;
     let lastDiffY = 0;
+    // the detail mask serves the same role for the detail Deltas path, which also has to run a
+    // post-pass; it is reset once up front (not per pixel) so no stale classification survives
+    if (detailMask) detailMask.fill(0);
 
     // compare each pixel of one image against the other one
     for (let i = 0, pos = 0; i < len; i++, pos += 4) {
+        const skipped = ignoreMask && ignoreMask[i];
         // whether the HyAB OKLab distance exceeds the threshold: 0 if not, ±1 if yes (negative if img2 pixel is darker)
-        const delta = (a32[i] === b32[i] || (ignoreMask && ignoreMask[i])) ? 0 : colorDelta(img1, img2, pos, checkerboard, threshold);
+        const delta = (a32[i] === b32[i] || skipped) ? 0 : colorDelta(img1, img2, pos, checkerboard, threshold);
+
+        if (skipped && detailMask) detailMask[i] = 3;
 
         // the color difference is above the threshold
         if (delta) {
@@ -93,6 +110,7 @@ export default function pixelmatch(img1, img2, output, width, height, options = 
                 // note that we do not include such pixels in a mask
                 if (output && !diffMask) drawPixel(output, pos, aaR, aaG, aaB);
                 if (mask) mask[i] = 2;
+                if (detailMask) detailMask[i] = 2;
 
             } else {
                 // found substantial difference not caused by anti-aliasing; draw it as such
@@ -108,12 +126,29 @@ export default function pixelmatch(img1, img2, output, width, height, options = 
                     if (firstDiffY < 0) firstDiffY = y;
                     lastDiffY = y;
                 }
+                if (detailMask) detailMask[i] = 1;
                 diff++;
             }
 
         } else if (output && !diffMask) {
             // pixels are similar; draw background as grayscale image blended with white
             drawGrayPixel(output, pos, img1, alpha);
+        }
+    }
+
+    // the expensive full-precision distance is a post-pass over the (much smaller) set of
+    // differing pixels, which keeps the per-pixel comparison loop free of extra work
+    if (detailDeltas && diff) {
+        if (detailMask) {
+            for (let i = 0; i < len; i++) {
+                if (detailMask[i] === 1) detailDeltas[i] = hyabMagnitude(img1, img2, i * 4, checkerboard);
+            }
+        } else {
+            // no mask was requested, so there is no record of which pixels differ and every
+            // pixel has to be measured
+            for (let i = 0, pos = 0; i < len; i++, pos += 4) {
+                detailDeltas[i] = hyabMagnitude(img1, img2, pos, checkerboard);
+            }
         }
     }
 
@@ -519,6 +554,80 @@ function oklabHyabDelta(dLr, dl, dm, ds, maxDelta) {
 
     // encode whether the pixel lightens or darkens in the sign
     return dLr > 0 ? -1 : 1;
+}
+
+/**
+ * Full OKLab HyAB distance between two pixels.
+ *
+ * `colorDelta` intentionally returns only the sign of the difference: the threshold test can
+ * decide `HyAB <= threshold` without ever computing the square root, which keeps the hot loop
+ * fast. Callers that need the actual magnitude (for ranking or reporting) opt in here instead,
+ * and this function is therefore only reached for pixels that already differ.
+ *
+ * The OKLab conversion is duplicated rather than shared with `colorDeltaOpaque` on purpose:
+ * threading a "return magnitude" flag through the hot path would slow down every comparison,
+ * including the default one. Few pixels take this branch, so the duplication is cheap.
+ *
+ * @param {Uint8Array | Uint8ClampedArray} img1
+ * @param {Uint8Array | Uint8ClampedArray} img2
+ * @param {number} k Pixel offset (in bytes).
+ * @param {boolean} checkerboard Whether semi-transparent pixels are composited over a checkerboard.
+ * @return {number} Perceptual distance, ~0–1 with 1 being the black/white distance.
+ */
+function hyabMagnitude(img1, img2, k, checkerboard) {
+    const r1 = img1[k];
+    const g1 = img1[k + 1];
+    const b1 = img1[k + 2];
+    const a1 = img1[k + 3];
+    const r2 = img2[k];
+    const g2 = img2[k + 1];
+    const b2 = img2[k + 2];
+    const a2 = img2[k + 3];
+
+    let l1, m1, s1, l2, m2, s2;
+
+    if (a1 === 255 && a2 === 255) {
+        l1 = cbrtLUT(L_R[r1] + L_G[g1] + L_B[b1]);
+        m1 = cbrtLUT(M_R[r1] + M_G[g1] + M_B[b1]);
+        s1 = cbrtLUT(S_R[r1] + S_G[g1] + S_B[b1]);
+        l2 = cbrtLUT(L_R[r2] + L_G[g2] + L_B[b2]);
+        m2 = cbrtLUT(M_R[r2] + M_G[g2] + M_B[b2]);
+        s2 = cbrtLUT(S_R[r2] + S_G[g2] + S_B[b2]);
+    } else {
+        let rb = 255, gb = 255, bb = 255;
+        if (checkerboard) {
+            const h = Math.imul(k >> 2, 0x9e3779b1);
+            rb = 48 + 159 * (h >>> 31);
+            gb = 48 + 159 * ((h >>> 30) & 1);
+            bb = 48 + 159 * ((h >>> 29) & 1);
+        }
+        const br1 = (r1 * a1 + rb * (255 - a1)) / 255;
+        const bg1 = (g1 * a1 + gb * (255 - a1)) / 255;
+        const bb1 = (b1 * a1 + bb * (255 - a1)) / 255;
+        const br2 = (r2 * a2 + rb * (255 - a2)) / 255;
+        const bg2 = (g2 * a2 + gb * (255 - a2)) / 255;
+        const bb2 = (b2 * a2 + bb * (255 - a2)) / 255;
+
+        const lr1 = linLUT(br1), lg1 = linLUT(bg1), lb1 = linLUT(bb1);
+        const lr2 = linLUT(br2), lg2 = linLUT(bg2), lb2 = linLUT(bb2);
+
+        l1 = cbrtLUT(0.4122214708 * lr1 + 0.5363325363 * lg1 + 0.0514459929 * lb1);
+        m1 = cbrtLUT(0.2119034982 * lr1 + 0.6806995451 * lg1 + 0.1073969566 * lb1);
+        s1 = cbrtLUT(0.0883024619 * lr1 + 0.2817188376 * lg1 + 0.6299787005 * lb1);
+        l2 = cbrtLUT(0.4122214708 * lr2 + 0.5363325363 * lg2 + 0.0514459929 * lb2);
+        m2 = cbrtLUT(0.2119034982 * lr2 + 0.6806995451 * lg2 + 0.1073969566 * lb2);
+        s2 = cbrtLUT(0.0883024619 * lr2 + 0.2817188376 * lg2 + 0.6299787005 * lb2);
+    }
+
+    const dLr = lightness(l1, m1, s1) - lightness(l2, m2, s2);
+    const dl = l1 - l2;
+    const dm = m1 - m2;
+    const ds = s1 - s2;
+
+    const da = 1.9779984951 * dl - 2.4285922050 * dm + 0.4505937099 * ds;
+    const db = 0.0259040371 * dl + 0.7827717662 * dm - 0.8086757660 * ds;
+
+    return Math.abs(dLr) + Math.sqrt(da * da + db * db);
 }
 
 /**

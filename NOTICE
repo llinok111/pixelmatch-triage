@@ -1,0 +1,56 @@
+pixelmatch-triage
+=================
+
+This project is a derivative work of pixelmatch.
+
+Upstream project: pixelmatch
+Original author: Volodymyr Agafonkin (mourner)
+Upstream repository: https://github.com/mapbox/pixelmatch
+Upstream license: ISC License
+Copyright (c) 2025, Mapbox
+
+The ISC license permits use, copying, modification and distribution of this software for any
+purpose, with or without fee, provided that the copyright notice above and the permission notice
+in LICENSE appear in all copies. This project keeps the original LICENSE file unmodified and
+distributes it alongside every build and archive.
+
+Derivative notes
+----------------
+
+The fork is based on pixelmatch v8.0.0, commit ab76f52 ("cleanup readme"). Its git history is
+preserved: the upstream commits are present in this repository, and the changes made here are
+isolated in commits on top of them. To list them:
+
+    git log --oneline upstream/main..HEAD
+
+Files that carry upstream code unchanged:
+    index.js            (for the same behaviour; extended, see below)
+    bin/pixelmatch      (unmodified upstream CLI)
+    test/fixtures/*     (unmodified upstream fixtures)
+    test/test.js        (unmodified upstream test suite)
+
+Files added by this fork:
+    triage.js                       rich comparison API
+    triage.d.ts                     its type declarations
+    lib/regions.js                  connected-component regions
+    lib/shift.js                    global shift estimation and compensation
+    lib/annotate.js                 region boxes and bitmap labels on a diff image
+    bin/pixelmatch-triage.js        CLI that reports regions, JSON and annotated PNG
+    test/triage.js                  tests for the added behaviour
+    bench/triage-bench.js           measurement harness for the added cost
+    examples/scenario.mjs           reproduction of the motivating problem
+
+Modifications to upstream code in index.js are additive and opt-in:
+    - new optional `detailMask` and `detailDeltas` options
+    - identical-input fast path also resets those two caller-provided buffers
+    - new internal helper `hyabMagnitude`, used only when `detailDeltas` is requested
+The default call path, its return value and its error messages are unchanged; the upstream test
+suite runs unmodified and passes.
+
+What is NOT inherited
+---------------------
+
+No code, data, or assets were taken from any other project. The region clustering, shift
+estimation, annotation renderer and CLI in this repository were written for this fork. They do not
+copy from popular implementations of the same ideas; the algorithms are implemented from their
+published descriptions or from first principles, as noted in the source comments.

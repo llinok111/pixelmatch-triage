@@ -4,4 +4,12 @@ node_modules
 .nyc_output
 coverage
 tmp
-index.d.ts
+
+# upstream generates index.d.ts from index.js with `tsc --emitDeclarationOnly`; this fork ships a
+# hand-written index.d.ts (it documents the added options) and runs tsc with noEmit, so the file is
+# tracked in git and force-added below when it is ignored
+
+# local verification artefacts (screenshots, trial output)
+_out/
+_shots/
+test/tmp-cli-*

@@ -1,16 +1,34 @@
 {
-  "name": "pixelmatch",
-  "version": "8.0.0",
+  "name": "pixelmatch-triage",
+  "version": "0.1.0",
   "type": "module",
-  "description": "The smallest and fastest pixel-level image comparison library.",
+  "description": "Pixel comparison with connected-region triage, shift detection and quantitative metrics. Derived from pixelmatch.",
   "main": "index.js",
   "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./triage": {
+      "types": "./triage.d.ts",
+      "default": "./triage.js"
+    },
+    "./core": "./index.js"
+  },
   "bin": {
-    "pixelmatch": "bin/pixelmatch"
+    "pixelmatch": "bin/pixelmatch",
+    "pixelmatch-triage": "bin/pixelmatch-triage.js"
   },
   "files": [
-    "bin/pixelmatch",
-    "index.d.ts"
+    "bin/",
+    "lib/",
+    "index.js",
+    "index.d.ts",
+    "triage.js",
+    "triage.d.ts",
+    "LICENSE",
+    "NOTICE"
   ],
   "dependencies": {
     "pngjs": "^7.0.0"
@@ -22,21 +40,26 @@
   },
   "scripts": {
     "pretest": "eslint",
-    "test": "tsc && node --test"
+    "test": "tsc && node --test",
+    "test:core": "node --test test/test.js",
+    "bench": "node bench/triage-bench.js"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/mapbox/pixelmatch.git"
+    "url": "git+https://github.com/llinok111/pixelmatch-triage.git"
   },
   "keywords": [
     "image",
     "comparison",
-    "diff"
+    "diff",
+    "visual-regression",
+    "screenshot",
+    "clustering"
   ],
-  "author": "Volodymyr Agafonkin",
+  "author": "llinok111",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/mapbox/pixelmatch/issues"
+    "url": "https://github.com/llinok111/pixelmatch-triage/issues"
   },
-  "homepage": "https://github.com/mapbox/pixelmatch#readme"
+  "homepage": "https://github.com/llinok111/pixelmatch-triage#readme"
 }

@@ -3,13 +3,13 @@
         "allowJs": true,
         "checkJs": true,
         "strict": true,
-        "emitDeclarationOnly": true,
-        "declaration": true,
+        "noEmit": true,
         "target": "es2017",
         "module": "nodenext",
         "moduleResolution": "nodenext"
     },
     "files": [
-        "index.js"
+        "index.js",
+        "triage.js"
     ]
 }
