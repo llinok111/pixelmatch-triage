@@ -8,7 +8,7 @@ import {fileURLToPath} from 'node:url';
 
 import {PNG} from 'pngjs';
 import pixelmatch from '../index.js';
-import {compare, estimateShift, shiftPixels, annotateDiff, DEFAULT_PALETTE} from '../triage.js';
+import {compare, estimateShift, shiftPixels, annotateDiff, detectMoves, toSarif, DEFAULT_PALETTE} from '../triage.js';
 
 const fixture = name => PNG.sync.read(fs.readFileSync(new URL(`./fixtures/${name}.png`, import.meta.url)));
 
@@ -456,4 +456,290 @@ test('CLI rejects an unknown flag with exit 64', () => {
         code = /** @type {{status: number}} */ (error).status;
     }
     assert.equal(code, 64);
+});
+
+// ---------------------------------------------------------------------------------------------
+// v0.2.0: links between regions that hold the same content at two positions
+// ---------------------------------------------------------------------------------------------
+
+/** @return {Uint8Array} a white RGBA canvas */
+const white = (width, height) => {
+    const data = new Uint8Array(width * height * 4);
+    for (let i = 0; i < width * height; i++) {
+        data[i * 4] = 255;
+        data[i * 4 + 1] = 255;
+        data[i * 4 + 2] = 255;
+        data[i * 4 + 3] = 255;
+    }
+    return data;
+};
+
+test('a block of the same content at a new position is linked', () => {
+    const width = 200;
+    const height = 140;
+    const before = white(width, height);
+    const after = white(width, height);
+    fillRect(before, width, 10, 10, 40, 20, [0, 102, 204]);
+    fillRect(after, width, 70, 10, 40, 20, [0, 102, 204]);
+
+    const result = compare(before, after, width, height, {threshold: 0.05});
+    assert.equal(result.regions.length, 2);
+    assert.equal(result.moves.length, 1);
+
+    const move = result.moves[0];
+    assert.equal(move.dx, 60);
+    assert.equal(move.dy, 0);
+    assert.equal(move.distance, 60);
+    assert.equal(move.similarity, 1);
+
+    const first = result.regions.find(r => r.id === move.a);
+    const second = result.regions.find(r => r.id === move.b);
+    assert.equal(first.moved, 'linked');
+    assert.equal(first.counterpart, move.b);
+    assert.equal(second.counterpart, move.a);
+
+    assert.deepEqual(result.summary, {added: 1, removed: 1, mixed: 0, moved: 1, modified: 0});
+});
+
+test('two same-sized blocks of different colour are not linked', () => {
+    const width = 200;
+    const height = 140;
+    const before = white(width, height);
+    const after = white(width, height);
+    fillRect(before, width, 10, 10, 40, 20, [0, 102, 204]);
+    fillRect(after, width, 70, 10, 40, 20, [204, 51, 51]);
+
+    const result = compare(before, after, width, height, {threshold: 0.05});
+    assert.equal(result.regions.length, 2);
+    assert.deepEqual(result.moves, [], 'different content must not be linked');
+    assert.equal(result.summary.moved, 0);
+    assert.equal(result.summary.modified, 2);
+});
+
+test('a link is not claimed beyond maxMove', () => {
+    const width = 240;
+    const height = 140;
+    const before = white(width, height);
+    const after = white(width, height);
+    fillRect(before, width, 5, 10, 30, 20, [0, 102, 204]);
+    fillRect(after, width, 205, 10, 30, 20, [0, 102, 204]);
+
+    const close = compare(before, after, width, height, {threshold: 0.05, maxMove: 200});
+    const far = compare(before, after, width, height, {threshold: 0.05, maxMove: 96});
+
+    assert.equal(close.moves.length, 1);
+    assert.equal(close.moves[0].distance, 200);
+    assert.equal(far.moves.length, 0);
+});
+
+test('a duplicated control is not reported as a move', () => {
+    const width = 240;
+    const height = 140;
+    const before = white(width, height);
+    const after = white(width, height);
+    fillRect(before, width, 10, 10, 30, 20, [0, 102, 204]);
+    fillRect(after, width, 10, 10, 30, 20, [0, 102, 204]);
+    fillRect(after, width, 100, 10, 30, 20, [0, 102, 204]);
+
+    const result = compare(before, after, width, height, {threshold: 0.05});
+    assert.equal(result.regions.length, 1);
+    assert.deepEqual(result.moves, []);
+});
+
+test('moves can be disabled without changing the diff', () => {
+    const width = 200;
+    const height = 140;
+    const before = white(width, height);
+    const after = white(width, height);
+    fillRect(before, width, 10, 10, 40, 20, [0, 102, 204]);
+    fillRect(after, width, 70, 10, 40, 20, [0, 102, 204]);
+
+    const withLinks = compare(before, after, width, height, {threshold: 0.05});
+    const without = compare(before, after, width, height, {threshold: 0.05, moves: false});
+
+    assert.equal(without.moves.length, 0);
+    assert.equal(without.diffPixels, withLinks.diffPixels);
+    assert.deepEqual(without.regions.map(r => [r.id, r.pixels]), withLinks.regions.map(r => [r.id, r.pixels]));
+    assert.equal(without.summary.moved, 0);
+    assert.equal(without.summary.modified, 2);
+});
+
+test('links are drawn as arrows on the annotated output', () => {
+    const width = 200;
+    const height = 140;
+    const before = white(width, height);
+    const after = white(width, height);
+    fillRect(before, width, 10, 10, 40, 20, [0, 102, 204]);
+    fillRect(after, width, 70, 10, 40, 20, [0, 102, 204]);
+
+    const linked = compare(before, after, width, height, {threshold: 0.05, annotate: true});
+    assert.equal(linked.moves.length, 1);
+
+    // the arrow adds pixels that are not part of either box or its label chip
+    const painted = (buf) => {
+        let n = 0;
+        for (let i = 0; i < buf.length; i += 4) {
+            if (buf[i] !== 255 || buf[i + 1] !== 255 || buf[i + 2] !== 255) n++;
+        }
+        return n;
+    };
+    const withoutArrows = annotateDiff(linked.diff, width, height, linked.regions);
+    assert.ok(painted(linked.annotated) > painted(withoutArrows), 'the arrow must add visible pixels');
+});
+
+test('move options are validated', () => {
+    const img = white(10, 10);
+    assert.throws(() => compare(img, img, 10, 10, {maxMove: -1}), /maxMove must be a non-negative number/);
+    assert.throws(() => compare(img, img, 10, 10, {minMoveSimilarity: 2}), /minMoveSimilarity must be between 0 and 1/);
+    assert.throws(() => compare(img, img, 10, 10, {minMovePixels: 0}), /minMovePixels must be a positive integer/);
+});
+
+test('detectMoves returns an empty result for fewer than two eligible regions', () => {
+    const img = white(20, 20);
+    const result = detectMoves({regions: [], img1: img, img2: img, width: 20, height: 20});
+    assert.deepEqual(result.moves, []);
+    assert.equal(result.pairs.size, 0);
+});
+
+// ---------------------------------------------------------------------------------------------
+// v0.2.0: SARIF output for code scanning
+// ---------------------------------------------------------------------------------------------
+
+test('SARIF output carries one result per region with its geometry', () => {
+    const width = 120;
+    const height = 80;
+    const before = white(width, height);
+    const after = white(width, height);
+    fillRect(after, width, 10, 10, 8, 6, [0, 0, 0]);
+    fillRect(after, width, 60, 40, 6, 4, [0, 0, 0]);
+
+    const report = compare(before, after, width, height, {threshold: 0.05});
+    const sarif = toSarif(report, {uri: 'screens/after.png', sourceLines: 800});
+
+    assert.equal(sarif.version, '2.1.0');
+    assert.equal(sarif.runs.length, 1);
+
+    const run = sarif.runs[0];
+    assert.equal(run.tool.driver.name, 'pixelmatch-triage');
+    assert.equal(run.tool.driver.rules[0].id, 'visual-regression');
+    assert.equal(run.results.length, report.regions.length);
+
+    const first = run.results[0];
+    assert.equal(first.ruleId, 'visual-regression');
+    assert.equal(first.level, 'warning');
+    assert.equal(first.locations[0].physicalLocation.artifactLocation.uri, 'screens/after.png');
+
+    const line = first.locations[0].physicalLocation.region;
+    // region 1 sits near the top of an 80px tall image mapped onto 800 lines
+    assert.ok(line.startLine >= 1 && line.startLine <= 800, `line out of range: ${line.startLine}`);
+    assert.equal(line.startColumn, report.regions[0].x + 1);
+    assert.equal(first.properties.regionId, report.regions[0].id);
+    assert.equal(first.properties.pixels, report.regions[0].pixels);
+});
+
+test('SARIF omits line info when no line count is given', () => {
+    const before = white(40, 40);
+    const after = white(40, 40);
+    fillRect(after, 40, 5, 5, 4, 4, [0, 0, 0]);
+    const report = compare(before, after, 40, 40, {threshold: 0.05});
+    const sarif = toSarif(report);
+    assert.equal(sarif.runs[0].results[0].locations[0].physicalLocation.region, undefined);
+});
+
+test('SARIF caps results but keeps the strongest regions', () => {
+    const width = 120;
+    const height = 60;
+    const before = white(width, height);
+    const after = white(width, height);
+    for (let i = 0; i < 5; i++) fillRect(after, width, 5 + i * 20, 10, 6, 6, [0, 0, 0]);
+
+    const report = compare(before, after, width, height, {threshold: 0.05});
+    assert.equal(report.regions.length, 5);
+    const sarif = toSarif(report, {maxResults: 2});
+    assert.equal(sarif.runs[0].results.length, 2);
+    // regions are ranked by weight, so the cap must keep ids 1 and 2
+    assert.deepEqual(sarif.runs[0].results.map(r => r.properties.regionId), [1, 2]);
+});
+
+test('SARIF reports the linked counterpart of a moved block', () => {
+    const width = 200;
+    const height = 140;
+    const before = white(width, height);
+    const after = white(width, height);
+    fillRect(before, width, 10, 10, 40, 20, [0, 102, 204]);
+    fillRect(after, width, 70, 10, 40, 20, [0, 102, 204]);
+
+    const report = compare(before, after, width, height, {threshold: 0.05});
+    assert.equal(report.moves.length, 1);
+    const sarif = toSarif(report);
+    const linked = sarif.runs[0].results.map(r => r.properties.linkedTo);
+    assert.ok(linked.every(id => typeof id === 'number'), 'both ends must name their counterpart');
+    assert.match(sarif.runs[0].results[0].message.text, /same content as region \d+/);
+});
+
+test('SARIF is valid JSON and survives a round trip', () => {
+    const before = white(30, 30);
+    const after = white(30, 30);
+    fillRect(after, 30, 4, 4, 5, 5, [0, 0, 0]);
+    const report = compare(before, after, 30, 30, {threshold: 0.05, annotate: true});
+
+    const text = JSON.stringify(toSarif(report, {sourceLines: 100}));
+    const parsed = JSON.parse(text);
+    assert.equal(parsed.runs[0].results.length, report.regions.length);
+    // the SARIF log must not drag the pixel buffers along
+    assert.ok(text.length < 20000, `unexpectedly large SARIF: ${text.length} bytes`);
+});
+
+test('SARIF validates its options', () => {
+    const report = compare(white(10, 10), white(10, 10), 10, 10);
+    assert.throws(() => toSarif(report, {maxResults: 0}), /maxResults must be a positive integer/);
+    assert.throws(() => toSarif(report, {level: 'fatal'}), /level must be one of/);
+});
+
+test('CLI writes a SARIF file that parses', (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pm-triage-sarif-'));
+    t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
+    const bin = fileURLToPath(new URL('../bin/pixelmatch-triage.js', import.meta.url));
+    const a = fileURLToPath(new URL('./fixtures/1a.png', import.meta.url));
+    const b = fileURLToPath(new URL('./fixtures/1b.png', import.meta.url));
+
+    let code = 0;
+    try {
+        execFileSync(process.execPath, [bin, a, b, '--threshold', '0.05', '--sarif', `${dir}/out.sarif`, '--sarif-lines', '256', '--quiet']);
+    } catch (error) {
+        code = /** @type {{status: number}} */ (error).status;
+    }
+    assert.equal(code, 66);
+
+    const sarif = JSON.parse(fs.readFileSync(`${dir}/out.sarif`, 'utf8'));
+    assert.equal(sarif.version, '2.1.0');
+    assert.ok(sarif.runs[0].results.length > 0);
+    assert.equal(sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri, '1b.png');
+});
+
+test('SARIF tool version matches package.json', () => {
+    const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    const report = compare(white(10, 10), white(10, 10), 10, 10);
+    const sarif = toSarif(report);
+    assert.equal(sarif.runs[0].tool.driver.version, pkg.version, 'lib/sarif.js TOOL_VERSION drifted from package.json');
+});
+
+test('the default move radius scales with the image, so a cross-page move is still linked', () => {
+    // regression: a fixed 96 px default silently dropped a 140 px relocation on a 480x320 page
+    const width = 480;
+    const height = 320;
+    const before = white(width, height);
+    const after = white(width, height);
+    fillRect(before, width, 24, 260, 90, 30, [0, 102, 204]);
+    fillRect(after, width, 164, 260, 90, 30, [0, 102, 204]);
+
+    const result = compare(before, after, width, height, {threshold: 0.05});
+    assert.equal(result.moves.length, 1, 'a 140 px move on a 480 px wide page must be linked');
+    assert.equal(result.moves[0].distance, 140);
+    assert.equal(result.moves[0].similarity, 1);
+    assert.equal(result.summary.moved, 1);
+    assert.equal(result.summary.modified, 0);
+
+    // and the effective radius is reported back, so a caller can see what was searched
+    assert.equal(result.options.maxMove, 240);
 });

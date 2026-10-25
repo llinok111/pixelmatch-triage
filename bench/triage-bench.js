@@ -63,6 +63,14 @@ const configs = [
         }
     },
     {
+        name: 'compare(): + moves:false',
+        run: () => {
+            let sum = 0;
+            for (const [a, b] of fixtures) sum += compare(a.data, b.data, a.width, a.height, {moves: false}).moves.length;
+            return sum;
+        }
+    },
+    {
         name: 'compare(): + align:auto',
         run: () => {
             let sum = 0;
@@ -104,5 +112,5 @@ for (let c = 0; c < configs.length; c++) {
     const p10 = percentile(samples[c], 0.1);
     const ratioMed = c === 0 ? '-' : `${(med / baselineMedian).toFixed(2)}x`;
     const ratioP10 = c === 0 ? '-' : `${(p10 / baselineP10).toFixed(2)}x`;
-    console.log(`${med.toFixed(2).padStart(7)} ms  p10 ${p10.toFixed(2).padStart(6)} ms  median ${ratioMed.padStart(6)}  p10 ${ratioP10.padStart(6)}  ${configs[c].name}`);
+    console.log(`p10 ${p10.toFixed(2).padStart(6)} ms (${ratioP10.padStart(6)})   median ${med.toFixed(2).padStart(7)} ms (${ratioMed.padStart(6)})   ${configs[c].name}`);
 }

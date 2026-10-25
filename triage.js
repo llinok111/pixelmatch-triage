@@ -10,8 +10,10 @@ import pixelmatch from './index.js';
 import {extractRegions, labelComponents} from './lib/regions.js';
 import {estimateShift, shiftPixels, shiftMask} from './lib/shift.js';
 import {annotateDiff} from './lib/annotate.js';
+import {detectMoves} from './lib/moves.js';
+import {toSarif, describe} from './lib/sarif.js';
 
-export {extractRegions, labelComponents, estimateShift, shiftPixels, shiftMask, annotateDiff};
+export {extractRegions, labelComponents, estimateShift, shiftPixels, shiftMask, annotateDiff, detectMoves, toSarif, describe};
 export {DEFAULT_PALETTE} from './lib/annotate.js';
 
 /**
@@ -37,6 +39,9 @@ export {DEFAULT_PALETTE} from './lib/annotate.js';
  * @property {number | null} psnr Peak signal-to-noise ratio over non-ignored pixels (null when identical).
  * @property {ShiftReport} shift
  * @property {import('./lib/regions.js').Region[]} regions
+ * @property {import('./lib/moves.js').Move[]} moves Regions that are the same content at a new position.
+ * @property {{added: number, removed: number, mixed: number, moved: number, modified: number}} summary
+ *   Region counts by kind; `moved` counts linked pairs, `modified` counts regions not linked.
  * @property {Uint8Array | null} diff
  * @property {Uint8Array | null} annotated
  * @property {number} coreCount Whatever `pixelmatch()` returned, which is window-based when `windowSize` is finite.
@@ -64,6 +69,11 @@ export {DEFAULT_PALETTE} from './lib/annotate.js';
  * @param {number} [options.minShiftGain=0.15] Minimum relative cost improvement required to auto-align.
  * @param {boolean} [options.diff=false] Return the diff RGBA buffer.
  * @param {boolean} [options.annotate=false] Return an annotated diff with region boxes (implies `diff`).
+ * @param {boolean} [options.moves=true] Pair removed/added regions that are the same content moved.
+ * @param {number} [options.maxMove] Maximum |dx|/|dy| for a link, in pixels. Defaults to half the
+ *   larger image dimension (at least 96), because a control can legitimately move across the page.
+ * @param {number} [options.minMoveSimilarity=0.85] Minimum content similarity (0–1) to pair two regions.
+ * @param {number} [options.minMovePixels=20] Regions smaller than this are never paired.
  * @param {number} [options.alpha=0.1]
  * @param {[number, number, number]} [options.aaColor]
  * @param {[number, number, number]} [options.diffColor]
@@ -89,6 +99,10 @@ export function compare(img1, img2, width, height, options = {}) {
         minShiftGain = 0.15,
         diff = false,
         annotate = false,
+        moves = true,
+        maxMove = 0,
+        minMoveSimilarity = 0.85,
+        minMovePixels = 20,
         alpha = 0.1,
         aaColor,
         diffColor,
@@ -153,6 +167,21 @@ export function compare(img1, img2, width, height, options = {}) {
     }
     if (!Number.isInteger(minPixels) || minPixels < 1) {
         throw new Error(`regions.minPixels must be a positive integer. Got ${minPixels}.`);
+    }
+    // move options are validated here rather than inside detectMoves, so a bad value fails even
+    // when the images happen to have too few regions to compare
+    if (!Number.isFinite(maxMove) || maxMove < 0) {
+        throw new Error(`maxMove must be a non-negative number. Got ${maxMove}.`);
+    }
+    // 0 means "auto": a control can move anywhere on the page, so a fixed 96 px default silently
+    // dropped real relocations. Half the larger dimension is generous without spanning the whole
+    // image, and content similarity still has to hold for a link to be claimed.
+    const effectiveMaxMove = maxMove > 0 ? maxMove : Math.max(96, Math.round(Math.max(width, height) / 2));
+    if (!Number.isFinite(minMoveSimilarity) || minMoveSimilarity < 0 || minMoveSimilarity > 1) {
+        throw new Error(`minMoveSimilarity must be between 0 and 1. Got ${minMoveSimilarity}.`);
+    }
+    if (!Number.isInteger(minMovePixels) || minMovePixels < 1) {
+        throw new Error(`minMovePixels must be a positive integer. Got ${minMovePixels}.`);
     }
 
     // the classification buffer is only filled by the core when regions or distances are needed:
@@ -248,6 +277,42 @@ export function compare(img1, img2, width, height, options = {}) {
         }) :
         {regions: [], components: 0, mergedRegions: 0};
 
+    // pair removed/added regions that are the same content at a new position
+    /** @type {{moves: import('./lib/moves.js').Move[], pairs: Map<number, number>}} */
+    let detected = {moves: [], pairs: new Map()};
+    if (moves && extracted.regions.length > 1) {
+        detected = detectMoves({
+            regions: extracted.regions,
+            img1,
+            img2: compared,
+            width,
+            height,
+            maxMove: effectiveMaxMove,
+            minSimilarity: minMoveSimilarity,
+            minPixels: minMovePixels
+        });
+
+        for (const move of detected.moves) {
+            const first = extracted.regions.find(r => r.id === move.a);
+            const second = extracted.regions.find(r => r.id === move.b);
+            if (!first || !second) continue;
+            first.moved = 'linked';
+            first.counterpart = move.b;
+            first.move = move;
+            second.moved = 'linked';
+            second.counterpart = move.a;
+            second.move = move;
+        }
+    }
+
+    const regionSummary = {added: 0, removed: 0, mixed: 0, moved: detected.moves.length, modified: 0};
+    for (const region of extracted.regions) {
+        if (region.kind === 'added') regionSummary.added++;
+        else if (region.kind === 'removed') regionSummary.removed++;
+        else regionSummary.mixed++;
+        if (!region.moved) regionSummary.modified++;
+    }
+
     return {
         width,
         height,
@@ -259,9 +324,11 @@ export function compare(img1, img2, width, height, options = {}) {
         psnr,
         shift,
         regions: extracted.regions,
+        moves: detected.moves,
+        summary: regionSummary,
         diff: wantDiff ? /** @type {Uint8Array} */ (output) : null,
         annotated: annotate && output ?
-            annotateDiff(output, width, height, extracted.regions) :
+            annotateDiff(output, width, height, extracted.regions, {moves: detected.moves}) :
             null,
         coreCount,
         components: extracted.components,
@@ -272,7 +339,8 @@ export function compare(img1, img2, width, height, options = {}) {
             mergeGap,
             minPixels,
             windowSize,
-            align
+            align,
+            maxMove: effectiveMaxMove
         }
     };
 }

@@ -1,6 +1,6 @@
 {
   "name": "pixelmatch-triage",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Pixel comparison with connected-region triage, shift detection and quantitative metrics. Derived from pixelmatch.",
   "main": "index.js",
@@ -28,7 +28,8 @@
     "triage.js",
     "triage.d.ts",
     "LICENSE",
-    "NOTICE"
+    "NOTICE",
+    "CHANGELOG.md"
   ],
   "dependencies": {
     "pngjs": "^7.0.0"

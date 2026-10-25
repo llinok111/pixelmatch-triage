@@ -34,11 +34,15 @@ Files added by this fork:
     triage.d.ts                     its type declarations
     lib/regions.js                  connected-component regions
     lib/shift.js                    global shift estimation and compensation
-    lib/annotate.js                 region boxes and bitmap labels on a diff image
-    bin/pixelmatch-triage.js        CLI that reports regions, JSON and annotated PNG
+    lib/annotate.js                 region boxes, bitmap labels and move connectors
+    lib/moves.js                    links between regions holding the same content
+    lib/sarif.js                    SARIF 2.1.0 output for code scanning
+    bin/pixelmatch-triage.js        CLI that reports regions, JSON, SARIF and PNG output
     test/triage.js                  tests for the added behaviour
+    test/browser-check.mjs          browser engine check (CDP, no test-framework dependency)
     bench/triage-bench.js           measurement harness for the added cost
     examples/scenario.mjs           reproduction of the motivating problem
+    CHANGELOG.md                    release notes for this fork
 
 Modifications to upstream code in index.js are additive and opt-in:
     - new optional `detailMask` and `detailDeltas` options

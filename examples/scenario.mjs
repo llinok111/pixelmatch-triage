@@ -97,6 +97,7 @@ for (const [title, image, note] of cases) {
     console.log(row('pixels differing (upstream)', count));
     console.log(row('regions after merging', result.regions.length));
     console.log(row('solid / diffuse regions', `${solid.length} / ${diffuse.length}`));
+    console.log(row('linked pairs', `${result.moves.length}${result.moves.length ? ` (${result.moves.map(m => `#${m.a} <-> #${m.b}, ${m.distance} px, similarity ${m.similarity}`).join('; ')})` : ''}`));
     console.log(row('pixels inside solid regions', solidPixels));
     console.log(row('largest region', `${largest.width}x${largest.height} at (${largest.x},${largest.y}), ${largest.pixels} px, mean Δ${largest.meanDelta.toFixed(3)}`));
     console.log(row('PSNR', `${result.psnr} dB`));

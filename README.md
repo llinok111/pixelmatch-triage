@@ -14,19 +14,24 @@ turns a pixel count into a triage report:
   and reported, and can optionally be compensated for before comparison.
 - **Quantitative metrics.** PSNR over the non-ignored pixels, a diff ratio, and anti-aliased /
   ignored pixel tallies.
+- **Linked blocks (v0.2).** Two regions holding the same content at different positions are
+  reported as one linked pair, so a relocated control stops looking like one deletion plus one
+  addition. The link states the separation and never claims a direction (pixels cannot establish
+  one — see limitations).
 - **Annotated diff.** The diff image can be returned with numbered boxes drawn around every
-  region, without adding a dependency.
-- **CLI + JSON.** A command-line tool that writes diff PNG, annotated PNG and a machine-readable
-  JSON report, keeping upstream's exit codes.
+  region and dashed connectors between linked pairs, without adding a dependency.
+- **CLI + JSON + SARIF.** A command-line tool that writes diff PNG, annotated PNG, a machine
+  readable JSON report and a SARIF 2.1.0 log for GitHub code scanning, keeping upstream's exit
+  codes.
 
 ```js
 import {compare} from 'pixelmatch-triage/triage';
 
 const result = compare(img1, img2, width, height, {threshold: 0.05});
 console.log(result.diffPixels, result.psnr, result.regions.length);
-// [
-//   {id: 1, x: 420, y: 103, width: 16, height: 14, pixels: 129, meanDelta: 0.345, kind: 'mixed', ...}
-// ]
+console.log(result.summary);   // {added: 1, removed: 1, mixed: 0, moved: 1, modified: 0}
+console.log(result.moves);     // [{a: 1, b: 2, dx: 60, dy: 0, distance: 60, similarity: 1}]
+// regions: [{id: 1, x: 420, y: 103, width: 16, height: 14, pixels: 129, meanDelta: 0.345, ...}]
 ```
 
 The original API is still there, unchanged:
@@ -80,6 +85,37 @@ The upstream number is a volume. The region report adds the shape: case A is 100
 with a strong colour distance, case B is a few-percent-dense field of weak specks. Those two
 want different reactions, and only one of them involves a human looking at a screenshot.
 
+## Linking the same content across positions (v0.2)
+
+A moved control produces two regions in a pixel diff: the old position reads as a change, the new
+position reads as another change. On a settings page that is `2 regions, 5,400 px` for what is
+really one action, and a reviewer has to spot the connection by eye.
+
+`compare()` links those two regions when their content matches across the two images:
+
+```
+A  primary button moved 140 px
+  regions after merging         2
+  linked pairs                  1  (#1 <-> #2, offset (140,0), distance 140 px, similarity 1)
+  summary                       added 1, removed 1, mixed 0, moved 1, modified 0
+```
+
+**Why the link has no direction.** A block that leaves position A and appears at B produces exactly
+the same two images as a block that left B and appeared at A, because both the vacated area and the
+previously empty area are background. No pixel-level method can recover which came first, so the
+report gives `a`/`b` (ordered by region id) and the separation `dx`/`dy`, and says nothing about
+direction. Consumers that know the capture order can interpret the sign themselves.
+
+**What it refuses to link**, each covered by a test in `test/triage.js`:
+
+- two same-sized blocks of different colour (a pure-luma signature scored 0.947 on blue vs red and
+  produced a false link; the signature carries RGB for exactly this reason),
+- content beyond `maxMove` (half the larger image dimension by default, minimum 96 px),
+- a duplicated control (one copy present in both images, one copy new): pixels alone cannot tell a
+  copy from a move, so no link is claimed rather than a wrong one,
+- regions below `minMovePixels` (20 px): speckles and anti-alias residue have no stable content.
+
+
 ## Install
 
 ```bash
@@ -116,7 +152,11 @@ Returns a report; it never writes into `img1` / `img2`.
 | `maxShift` | `4` | Shift search radius in pixels. |
 | `minShiftGain` | `0.15` | Relative cost improvement required before `align: 'auto'` applies a shift. |
 | `diff` | `false` | Return the diff RGBA buffer. |
-| `annotate` | `false` | Return a diff with numbered region boxes (implies `diff`). |
+| `annotate` | `false` | Return a diff with numbered region boxes and move connectors (implies `diff`). |
+| `moves` | `true` | Link regions holding the same content at two positions. |
+| `maxMove` | auto | Maximum \|dx\|/\|dy\| for a link. Defaults to half the larger dimension (min 96); a fixed small default dropped real relocations. |
+| `minMoveSimilarity` | `0.85` | Minimum cross-image content similarity (0–1) to link two regions. |
+| `minMovePixels` | `20` | Regions smaller than this are never linked (speckles, AA residue). |
 | `alpha`, `aaColor`, `diffColor`, `diffColorAlt`, `diffMask` | upstream defaults | Passed through. |
 
 Result fields:
@@ -128,6 +168,8 @@ Result fields:
 | `psnr` | `10 * log10(255² / MSE)` over non-ignored pixels, or `null` when identical. |
 | `coreCount` | Exactly what `pixelmatch()` returned (windowed when `windowSize` is finite). |
 | `regions` | Ranked array, see below. |
+| `moves` | Linked pairs: `{a, b, dx, dy, distance, similarity}`. |
+| `summary` | `{added, removed, mixed, moved, modified}` region counts; `moved` counts pairs. |
 | `components` | Raw 8-connected components before gap merging. |
 | `shift` | `{detected, dx, dy, gain, confidence, applied, maxShift}`. |
 | `diff`, `annotated` | `Uint8Array` RGBA buffers or `null`. |
@@ -146,12 +188,15 @@ Each region:
 | `weight` | `pixels * meanDelta`, the ranking key. |
 | `kind` | `added` (image 2 lighter), `removed` (darker), `mixed`. |
 | `meanColorA`, `meanColorB` | Mean `[r, g, b]` in each image. |
+| `moved` | `'linked'` when the region shares its content with another region. |
+| `counterpart` | Id of that other region. |
+| `move` | The link object itself. |
 
 ### Lower-level helpers
 
 Also exported from `pixelmatch-triage/triage` (and typed in `triage.d.ts`):
 `estimateShift`, `shiftPixels`, `shiftMask`, `extractRegions`, `labelComponents`,
-`annotateDiff`, `DEFAULT_PALETTE`.
+`detectMoves`, `annotateDiff`, `toSarif`, `describe`, `DEFAULT_PALETTE`.
 
 ### `pixelmatch()` additions
 
@@ -182,6 +227,9 @@ Reports are printed to stdout, and `--out-dir` writes `<name>-diff.png`,
 | `--merge-gap`, `--min-pixels` | Region merging and filtering. |
 | `--align`, `--max-shift` | Shift compensation. |
 | `--psnr-min <n>` | Exit 66 when PSNR is below `n` dB. |
+| `--sarif <f>` | Write a SARIF 2.1.0 log for code scanning; `-` prints it. |
+| `--sarif-lines <n>` | Map regions onto `n` lines of the compared file. |
+| `--sarif-level <l>` | `note`, `warning` (default) or `error`. |
 | `--quiet` | Suppress the human summary. |
 
 Exit codes match upstream `bin/pixelmatch`: `0` match, `66` differ, `65` dimension mismatch,
@@ -190,12 +238,21 @@ Exit codes match upstream `bin/pixelmatch`: `0` match, `66` differ, `65` dimensi
 ```bash
 # fail a build on a strong regression but tolerate a tiny one
 pixelmatch-triage a.png b.png --threshold 0.05 --psnr-min 35 --quiet
+
+# feed GitHub code scanning (upload the SARIF with github/codeql-action/upload-sarif)
+pixelmatch-triage before.png after.png --sarif results.sarif --sarif-lines 1200
 ```
+
+`--sarif-lines` maps each region onto a line of the compared file by proportional height, which is
+the only honest approximation available for an image: the pixels-to-lines relationship is not known
+to this tool. Without the flag the log carries no line numbers, and the pixel box travels in
+`properties.box` either way. The emitted log validates against the official SARIF 2.1.0 schema
+(checked with `@microsoft/sarif-multitool` 5.8.0, zero findings).
 
 ## Tests
 
 ```bash
-npm test            # eslint + tsc --noEmit + node --test  (53 tests)
+npm test            # eslint + tsc --noEmit + node --test  (69 tests)
 npm run test:core   # only the unmodified upstream suite (26 tests)
 npm run test:browser # load both entry points in a real browser engine
 npm run bench       # measured cost of each feature (see below)
@@ -203,9 +260,10 @@ npm run example     # the motivating scenario (see Why this exists)
 ```
 
 `test/test.js` is upstream's suite, byte-for-byte unmodified: it is the regression gate for the
-core. `test/triage.js` adds 27 tests for regions, merging, minPixels, masks, PSNR, shift
-estimation, alignment (including mask realignment), annotation geometry, option validation,
-windowed mode and the CLI including its exit codes.
+core. `test/triage.js` adds 43 tests: regions, merging, minPixels, masks, PSNR, shift estimation,
+alignment (including mask realignment), annotation geometry, move linking (including the
+false-positive cases below), SARIF structure and version drift, option validation, windowed mode,
+and the CLI including its exit codes.
 
 `npm run test:browser` serves the repository over HTTP on a random port, launches a headless
 Chrome/Edge (found automatically, or pass a path / set `CHROME_PATH`) and drives it over the
@@ -216,19 +274,24 @@ an annotated buffer of `width * height * 4`. Verified locally on Chrome 156; it 
 
 ## Measured performance
 
-`npm run bench`, 7 upstream fixture pairs (889,208 pixels per round), median of 40 interleaved
-rounds after 4 warmups on a desktop Windows machine. Ratios are quoted to two significant figures
-because that is what three consecutive runs supported (absolute times moved by under 3% between
-them):
+`npm run bench`, 7 upstream fixture pairs (889,208 pixels per round), 40 interleaved rounds after
+4 warmups on a desktop Windows machine. The 10th percentile is quoted rather than the median: on a
+shared machine the median picks up background load (it moved between 18 and 40 ms across runs for
+the same configuration) while p10 stayed within 3% across three runs. Ratios are therefore between
+p10 values.
 
-| Configuration | Median | vs upstream |
+Linked-pair detection costs about 1–3% on top of region extraction, because size bucketing
+rejects most pairs before any pixels are sampled.
+
+| Configuration | p10 | vs upstream (p10) |
 | --- | --- | --- |
-| upstream `pixelmatch()` | ~11.4 ms | — |
-| `compare()` with `regions: false` | ~12.7 ms | ~1.1× |
-| `compare()` with regions | ~23.4 ms | ~2.0× |
-| + diff buffer | ~28.3 ms | ~2.5× |
-| + annotation | ~29.5 ms | ~2.6× |
-| + `align: 'auto'` (9×9 offsets × 7 pairs) | ~78.9 ms | ~6.9× |
+| upstream `pixelmatch()` | ~11.2 ms | — |
+| `compare()` with `regions: false` | ~12.4 ms | ~1.1× |
+| `compare()` with regions | ~23.5 ms | ~2.1× |
+| + linked pairs (`moves`) | ~24.7 ms | ~2.2× |
+| + diff buffer | ~27.8 ms | ~2.5× |
+| + annotation | ~29.3 ms | ~2.6× |
+| + `align: 'auto'` (81 offsets per pair) | ~80.0 ms | ~7.2× |
 
 The fixture set is mixed by design (default threshold, differing pixel counts): `1a/1b` 121,
 `2a/2b` 10424, `3a/3b` 200, `4a/4b` 7616, `5a/5b` 0 (identical), `6a/6b` 38, `7a/7b` 2440. The
@@ -266,6 +329,17 @@ promise. Re-run `npm run bench` on your own hardware before budgeting.
 8. **`align: 'auto'` can misfire** when the two images differ mostly by content that legitimately
    moved in different directions; the global model then picks the dominant direction.
    `minShiftGain` guards the degenerate case where the estimate is noise.
+9. **A link is not a motion vector.** It states that two regions hold the same content, not which
+   position came first; see the section above. A copy and a move are indistinguishable at the pixel
+   level, and scaling or rotation breaks the size match, so a resized widget is never linked.
+10. **Links are pairwise and greedy.** Assignment walks candidate pairs by similarity and takes each
+    region once. With several identical widgets (a row of identical icons) the pairing can be
+    arbitrary among equally-good candidates: it is still true that they are the same content, but
+    which copy maps to which is not meaningful.
+11. **SARIF line numbers are proportional, not real.** `--sarif-lines` spreads regions over the line
+    count by height ratio. It places a finding near the corresponding part of the file, which is
+    what code scanning needs, but it is not a source mapping. The exact pixel box is always in
+    `properties.box`.
 
 ## Provenance and license
 

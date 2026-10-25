@@ -17,6 +17,33 @@ export interface Region {
     kind: RegionKind;
     meanColorA: [number, number, number];
     meanColorB: [number, number, number];
+    /** Set when the region shares its content with another region. */
+    moved?: 'linked' | null;
+    /** Id of the region holding the same content elsewhere. */
+    counterpart?: number | null;
+    move?: Move | null;
+}
+
+export interface Move {
+    /** Id of the first region (always the smaller id). */
+    a: number;
+    b: number;
+    /** `b.x - a.x`, in pixels. Direction is a presentation convention, not an inference. */
+    dx: number;
+    dy: number;
+    distance: number;
+    /** 0–1; 1 means the sampled content matches exactly. */
+    similarity: number;
+}
+
+export interface RegionSummary {
+    added: number;
+    removed: number;
+    mixed: number;
+    /** Number of linked pairs. */
+    moved: number;
+    /** Regions that are not part of a link. */
+    modified: number;
 }
 
 export interface ShiftReport {
@@ -42,6 +69,11 @@ export interface CompareOptions {
     minShiftGain?: number;
     diff?: boolean;
     annotate?: boolean;
+    moves?: boolean;
+    /** 0 or omitted means auto: half the larger image dimension, minimum 96 px. */
+    maxMove?: number;
+    minMoveSimilarity?: number;
+    minMovePixels?: number;
     alpha?: number;
     aaColor?: [number, number, number];
     diffColor?: [number, number, number];
@@ -60,6 +92,8 @@ export interface CompareResult {
     psnr: number | null;
     shift: ShiftReport;
     regions: Region[];
+    moves: Move[];
+    summary: RegionSummary;
     diff: Uint8Array | null;
     annotated: Uint8Array | null;
     coreCount: number;
@@ -130,3 +164,28 @@ export function annotateDiff(
         chipColor?: [number, number, number];
     }
 ): Uint8Array;
+
+export interface SarifOptions {
+    /** Repository-relative path of the compared image. */
+    uri?: string;
+    /** Map regions onto this many lines; 0 emits no line information. */
+    sourceLines?: number;
+    level?: 'none' | 'note' | 'warning' | 'error';
+    maxResults?: number;
+}
+
+export function toSarif(report: CompareResult, options?: SarifOptions): object;
+
+export function describe(region: Region): string;
+
+export function detectMoves(input: {
+    regions: Region[];
+    img1: Uint8Array | Uint8ClampedArray;
+    img2: Uint8Array | Uint8ClampedArray;
+    width: number;
+    /** 0 or omitted means auto: half the larger image dimension, minimum 96 px. */
+    maxMove?: number;
+    minSimilarity?: number;
+    minPixels?: number;
+    maxCandidates?: number;
+}): {moves: Move[]; pairs: Map<number, number>};

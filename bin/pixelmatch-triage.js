@@ -3,7 +3,7 @@
 import {PNG} from 'pngjs';
 import fs from 'node:fs';
 import path from 'node:path';
-import {compare} from '../triage.js';
+import {compare, toSarif, describe} from '../triage.js';
 
 const USAGE = `Usage: pixelmatch-triage image1.png image2.png [options]
 
@@ -14,6 +14,9 @@ Options:
   --diff <file>          Write the pixel diff PNG
   --annotated <file>     Write the diff PNG with numbered region boxes (implies --diff)
   --json <file>          Write the full report as JSON (- for stdout)
+  --sarif <file>         Write a SARIF 2.1.0 log for GitHub code scanning (- for stdout)
+  --sarif-lines <n>      Map regions onto n lines of the compared file in the SARIF output
+  --sarif-level <l>      SARIF result level: note, warning (default) or error
   --out-dir <dir>        Shorthand: write <name>-diff.png, <name>-annotated.png and <name>-report.json
   --name <name>          Base name used by --out-dir (default: image1 basename)
   --threshold <n>        Per-pixel threshold, 0-1 (default 0.1)
@@ -36,7 +39,10 @@ function parseArgs(argv) {
     const flags = new Map();
     /** @type {string[]} */
     const positionals = [];
-    const valued = new Set(['--diff', '--annotated', '--json', '--out-dir', '--name', '--threshold', '--merge-gap', '--min-pixels', '--max-shift', '--psnr-min']);
+    const valued = new Set([
+        '--diff', '--annotated', '--json', '--sarif', '--sarif-lines', '--sarif-level',
+        '--out-dir', '--name', '--threshold', '--merge-gap', '--min-pixels', '--max-shift', '--psnr-min'
+    ]);
     const booleanFlags = new Set(['--include-aa', '--align', '--quiet', '--help']);
 
     for (let i = 0; i < argv.length; i++) {
@@ -187,6 +193,8 @@ function main() {
             regions: result.regions.length
         },
         shift: result.shift,
+        moves: result.moves,
+        regionKinds: result.summary,
         regions: result.regions.map(r => ({
             id: r.id,
             box: {x: r.x, y: r.y, width: r.width, height: r.height},
@@ -212,19 +220,38 @@ function main() {
         elapsedMs: round(elapsedMs, 2)
     };
 
+    // machine output owns stdout: when a report goes to `-`, the human summary must not corrupt
+    // it, so it is suppressed entirely rather than redirected
+    let machineToStdout = false;
+
     const jsonTarget = flags.has('--json') ? String(flags.get('--json')) : (outDir ? path.join(outDir, `${baseName}-report.json`) : null);
     const jsonText = `${JSON.stringify(report, null, 2)}\n`;
-    const jsonToStdout = jsonTarget === '-';
-    if (jsonToStdout) {
+    if (jsonTarget === '-') {
         process.stdout.write(jsonText);
+        machineToStdout = true;
     } else if (jsonTarget) {
         fs.writeFileSync(jsonTarget, jsonText);
         written.json = jsonTarget;
     }
 
-    // machine output owns stdout: when the report goes to `-`, the human summary must not
-    // corrupt it, so it is suppressed entirely rather than redirected
-    const quiet = flags.has('--quiet') || jsonToStdout;
+    const sarifTarget = flags.has('--sarif') ? String(flags.get('--sarif')) : null;
+    if (sarifTarget) {
+        const sarif = toSarif(result, {
+            uri: path.basename(fileB),
+            sourceLines: numberFlag(flags, '--sarif-lines', 0),
+            level: flags.has('--sarif-level') ? String(flags.get('--sarif-level')) : 'warning'
+        });
+        const sarifText = `${JSON.stringify(sarif, null, 2)}\n`;
+        if (sarifTarget === '-') {
+            process.stdout.write(sarifText);
+            machineToStdout = true;
+        } else {
+            fs.writeFileSync(sarifTarget, sarifText);
+            written.sarif = sarifTarget;
+        }
+    }
+
+    const quiet = flags.has('--quiet') || machineToStdout;
 
     if (!quiet) {
         const summary = report.summary;
@@ -236,10 +263,14 @@ function main() {
         }
 
         for (const region of result.regions) {
-            const where = `(${region.x},${region.y}) ${region.width}x${region.height}`;
-            const strength = `mean Δ${region.meanDelta.toFixed(3)} max Δ${region.maxDelta.toFixed(3)}`;
-            const solid = region.diffuse ? 'diffuse' : 'solid';
-            process.stdout.write(`  #${String(region.id).padStart(2)} ${where}  ${String(region.pixels).padStart(6)} px  ${solid}  ${region.kind.padEnd(7)}  ${strength}\n`);
+            process.stdout.write(`  ${describe(region)}\n`);
+        }
+
+        if (result.moves.length > 0) {
+            process.stdout.write('linked pairs (same content at two positions; direction is not asserted):\n');
+            for (const move of result.moves) {
+                process.stdout.write(`  #${move.a} <-> #${move.b}  offset (${move.dx},${move.dy})  distance ${move.distance} px  similarity ${move.similarity}\n`);
+            }
         }
 
         for (const [kind, file] of Object.entries(written)) {
