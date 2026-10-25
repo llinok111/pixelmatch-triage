@@ -42,7 +42,7 @@
     "pretest": "eslint",
     "test": "tsc && node --test",
     "test:core": "node --test test/test.js",
-    "test:browser": "node test/browser-check.mjs",
+    "test:browser": "node scripts/browser-check.mjs",
     "bench": "node bench/triage-bench.js",
     "example": "node examples/scenario.mjs"
   },

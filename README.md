@@ -262,7 +262,7 @@ promise. Re-run `npm run bench` on your own hardware before budgeting.
 6. **`psnr` is a plain RGB MSE**, not a perceptual metric. It exists for a pass/fail threshold
    comparable to `compare -metric PSNR`, not for image quality research.
 7. **Browser support is verified for parsing and correctness, not for every engine.** The check in
-   `test/browser-check.mjs` runs Chrome; Firefox and Safari were not tested here.
+   `scripts/browser-check.mjs` runs Chrome; Firefox and Safari were not tested here.
 8. **`align: 'auto'` can misfire** when the two images differ mostly by content that legitimately
    moved in different directions; the global model then picks the dominant direction.
    `minShiftGain` guards the degenerate case where the estimate is noise.

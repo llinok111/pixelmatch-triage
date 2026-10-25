@@ -6,8 +6,12 @@
  * evaluating an expression inside the page, not from scraping console text, so a page's own inline
  * source can never be mistaken for a result.
  *
- * Usage: node test/browser-check.mjs [path-to-chrome-or-edge]
- * Exit codes: 0 pass, 1 fail, 2 no browser binary available.
+ * This file lives outside `test/` on purpose: `node --test` picks up every module under that
+ * directory, and this script needs a browser binary plus Node's global WebSocket (Node 22+), so it
+ * must not be mistaken for a unit test.
+ *
+ * Usage: node scripts/browser-check.mjs [path-to-chrome-or-edge]
+ * Exit codes: 0 pass, 1 fail, 2 prerequisites missing (no browser, or no global WebSocket).
  */
 import http from 'node:http';
 import fs from 'node:fs';
@@ -15,6 +19,11 @@ import os from 'node:os';
 import path from 'node:path';
 import {execFile} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
+
+if (typeof WebSocket === 'undefined') {
+    console.error(`This check needs a global WebSocket (Node 22+); running ${process.version}.`);
+    process.exit(2);
+}
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
