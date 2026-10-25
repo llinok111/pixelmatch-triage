@@ -133,17 +133,38 @@ server.listen(0, '127.0.0.1', () => {
     const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'pm-triage-'));
     const debugPort = 9500 + Math.floor(Math.random() * 400);
 
+    // CI runners execute as root with a constrained /dev/shm, and Chrome refuses to start as root
+    // unless the sandbox is disabled. These flags are only passed where they are required.
+    const platformFlags = process.platform === 'linux' ?
+        ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] :
+        [];
+
+    /** @type {string[]} */
+    const browserStderr = [];
+
     const child = execFile(browserPath, [
         '--headless=new',
         '--disable-gpu',
         '--no-first-run',
         '--no-default-browser-check',
+        ...platformFlags,
         `--user-data-dir=${profile}`,
         `--remote-debugging-port=${debugPort}`,
         'about:blank'
     ], () => {
         // the browser's own exit is irrelevant: `finish` kills it after the check completes
     });
+
+    if (child.stderr) {
+        child.stderr.setEncoding('utf8');
+        child.stderr.on('data', (chunk) => {
+            browserStderr.push(chunk);
+            if (browserStderr.length > 40) browserStderr.shift();
+        });
+    }
+
+    /** @return {string} the tail of the browser's stderr, for diagnosable failures */
+    const browserDiagnostics = () => browserStderr.join('').trim().split('\n').slice(-8).join('\n');
 
     const finish = (code) => {
         try {
@@ -163,7 +184,9 @@ server.listen(0, '127.0.0.1', () => {
 
     /** Poll until the browser exposes its debugging endpoint (startup is asynchronous). */
     const waitForTargets = async () => {
-        for (let attempt = 0; attempt < 40; attempt++) {
+        for (let attempt = 0; attempt < 60; attempt++) {
+            // a browser that already exited will never open the port; stop waiting and say why
+            if (child.exitCode !== null) return null;
             try {
                 const res = await fetch(`http://127.0.0.1:${debugPort}/json/list`);
                 const list = await res.json();
@@ -194,7 +217,11 @@ server.listen(0, '127.0.0.1', () => {
 
     const run = async () => {
         const targets = await waitForTargets();
-        if (!targets) throw new Error('browser did not expose a debugging target');
+        if (!targets) {
+            const code = child.exitCode;
+            const detail = browserDiagnostics();
+            throw new Error(`browser did not expose a debugging target${code !== null ? ` (exited with ${code})` : ''}${detail ? `\n${detail}` : ''}`);
+        }
 
         const page = targets.find(t => t.type === 'page') || targets[0];
         const ws = new WebSocket(page.webSocketDebuggerUrl);
