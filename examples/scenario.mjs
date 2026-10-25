@@ -88,8 +88,8 @@ const cases = [
 for (const [title, image, note] of cases) {
     const count = pixelmatch(baseline, image, null, WIDTH, HEIGHT, {threshold: 0.05});
     const result = compare(baseline, image, WIDTH, HEIGHT, {threshold: 0.05});
-    const solid = result.regions.filter((r) => !r.diffuse);
-    const diffuse = result.regions.filter((r) => r.diffuse);
+    const solid = result.regions.filter(r => !r.diffuse);
+    const diffuse = result.regions.filter(r => r.diffuse);
     const solidPixels = solid.reduce((sum, r) => sum + r.pixels, 0);
     const largest = result.regions.reduce((a, b) => (b.pixels > a.pixels ? b : a));
 
