@@ -276,7 +276,8 @@ promise. Re-run `npm run bench` on your own hardware before budgeting.
   are: `LICENSE` is unchanged and [NOTICE](NOTICE) records the origin, the base commit
   (`ab76f52`, v8.0.0), exactly which files are upstream's, and which are new.
 - The git history contains the upstream commits; this fork's changes are the commits on top of
-  `ab76f52`. `git log --oneline ab76f52..HEAD` lists them.
+  `ab76f52`. `git log --oneline ab76f52..HEAD` lists them. Upstream release tags (`v1.0.0`–`v8.0.0`)
+  are preserved from that history; this project's own releases start at `v0.1.0`.
 - No code was copied from other image-diff tools. The clustering, shift estimation and annotation
   code was written for this fork; the algorithms are described in the source comments
   (8-connected labelling, uniform-grid candidate search, strided sampling).
