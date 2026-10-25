@@ -42,7 +42,9 @@
     "pretest": "eslint",
     "test": "tsc && node --test",
     "test:core": "node --test test/test.js",
-    "bench": "node bench/triage-bench.js"
+    "test:browser": "node test/browser-check.mjs",
+    "bench": "node bench/triage-bench.js",
+    "example": "node examples/scenario.mjs"
   },
   "repository": {
     "type": "git",
@@ -61,5 +63,8 @@
   "bugs": {
     "url": "https://github.com/llinok111/pixelmatch-triage/issues"
   },
-  "homepage": "https://github.com/llinok111/pixelmatch-triage#readme"
+  "homepage": "https://github.com/llinok111/pixelmatch-triage#readme",
+  "engines": {
+    "node": ">=20"
+  }
 }

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 
@@ -389,8 +391,9 @@ test('windowed mode still returns the core windowed count', () => {
     assert.equal(result.regions.length, 2);
 });
 
-test('CLI writes diff, annotated and JSON, and uses upstream exit codes', () => {
-    const dir = fs.mkdtempSync(new URL('./tmp-cli-', import.meta.url).pathname.slice(1));
+test('CLI writes diff, annotated and JSON, and uses upstream exit codes', (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pm-triage-cli-'));
+    t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
     const bin = fileURLToPath(new URL('../bin/pixelmatch-triage.js', import.meta.url));
     const a = fileURLToPath(new URL('./fixtures/1a.png', import.meta.url));
     const b = fileURLToPath(new URL('./fixtures/1b.png', import.meta.url));

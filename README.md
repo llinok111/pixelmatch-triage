@@ -195,15 +195,24 @@ pixelmatch-triage a.png b.png --threshold 0.05 --psnr-min 35 --quiet
 ## Tests
 
 ```bash
-npm test          # eslint + tsc --noEmit + node --test  (52 tests)
-npm run test:core # only the unmodified upstream suite (26 tests)
-npm run bench     # measured cost of each feature (see below)
+npm test            # eslint + tsc --noEmit + node --test  (53 tests)
+npm run test:core   # only the unmodified upstream suite (26 tests)
+npm run test:browser # load both entry points in a real browser engine
+npm run bench       # measured cost of each feature (see below)
+npm run example     # the motivating scenario (see Why this exists)
 ```
 
 `test/test.js` is upstream's suite, byte-for-byte unmodified: it is the regression gate for the
-core. `test/triage.js` adds 26 tests for regions, merging, minPixels, masks, PSNR, shift
+core. `test/triage.js` adds 27 tests for regions, merging, minPixels, masks, PSNR, shift
 estimation, alignment (including mask realignment), annotation geometry, option validation,
 windowed mode and the CLI including its exit codes.
+
+`npm run test:browser` serves the repository over HTTP on a random port, launches a headless
+Chrome/Edge (found automatically, or pass a path / set `CHROME_PATH`) and drives it over the
+DevTools Protocol. It asserts the observable results of both entry points inside the browser:
+`core === 49` for a 7×7 black square on white, one region with box `(5,5,7,7)`, a finite PSNR and
+an annotated buffer of `width * height * 4`. Verified locally on Chrome 156; it is skipped from
+`npm test` because it needs a browser binary, and runs as a separate CI step.
 
 ## Measured performance
 
@@ -252,8 +261,8 @@ promise. Re-run `npm run bench` on your own hardware before budgeting.
    from regions, matching upstream's decision to not treat them as differences.
 6. **`psnr` is a plain RGB MSE**, not a perceptual metric. It exists for a pass/fail threshold
    comparable to `compare -metric PSNR`, not for image quality research.
-7. **Regions are not produced inside the browser directly**: the module works on raw typed arrays
-   like upstream, but only the Node entry points are tested here.
+7. **Browser support is verified for parsing and correctness, not for every engine.** The check in
+   `test/browser-check.mjs` runs Chrome; Firefox and Safari were not tested here.
 8. **`align: 'auto'` can misfire** when the two images differ mostly by content that legitimately
    moved in different directions; the global model then picks the dominant direction.
    `minShiftGain` guards the degenerate case where the estimate is noise.

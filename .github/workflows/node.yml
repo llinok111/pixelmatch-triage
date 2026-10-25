@@ -1,22 +1,70 @@
-name: Node
+name: CI
+
 on: [push, pull_request]
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22, 24]
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Setup Node
-      uses: actions/setup-node@v4
-      with:
-        node-version: 20
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
 
-    - name: Install dependencies
-      run: npm install
+      - name: Install dependencies
+        run: npm install
 
-    - name: Run tests
-      run: npm test
+      - name: Run lint, type check and tests
+        run: npm test
 
-    - name: Run the CLI tool
-      run: node bin/pixelmatch test/fixtures/1a.png test/fixtures/1a.png
+      - name: Run the upstream CLI tool
+        run: node bin/pixelmatch test/fixtures/1a.png test/fixtures/1a.png
+
+      # the triage CLI exits 66 when the images differ, which is expected here
+      - name: Run the triage CLI tool
+        run: |
+          set +e
+          node bin/pixelmatch-triage.js test/fixtures/1a.png test/fixtures/1b.png --out-dir "$RUNNER_TEMP/out"
+          code=$?
+          set -e
+          if [ "$code" -ne 66 ]; then
+            echo "expected exit 66, got $code"
+            exit 1
+          fi
+
+      - name: Verify the JSON report is machine readable
+        env:
+          REPORT: ${{ runner.temp }}/out/1a-report.json
+        run: |
+          node -e "
+          const r = require(process.env.REPORT);
+          if (!(r.summary.diffPixels > 0)) { console.error('no differing pixels recorded'); process.exit(1); }
+          if (!Array.isArray(r.regions) || r.regions.length === 0) { console.error('no regions recorded'); process.exit(1); }
+          console.log('report ok:', r.summary.diffPixels, 'pixels in', r.regions.length, 'regions');
+          "
+
+      - name: Run the motivating example
+        run: node examples/scenario.mjs
+
+      - name: Browser check (ESM modules load in a real engine)
+        if: matrix.node == 22
+        run: |
+          npx --yes @puppeteer/browsers install chrome@stable --path "$RUNNER_TEMP/browsers" >/dev/null
+          CHROME=$(ls -d "$RUNNER_TEMP"/browsers/chrome/*/chrome-linux64/chrome | head -1)
+          echo "using $CHROME"
+          CHROME_PATH="$CHROME" npm run test:browser
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: triage-artifacts-node${{ matrix.node }}
+          path: ${{ runner.temp }}/out/
+          if-no-files-found: warn
